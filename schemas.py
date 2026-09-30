@@ -1,5 +1,5 @@
 from enum import Enum
-from pydantic import BaseModel, computed_field
+from pydantic import BaseModel, computed_field, Field
 from Config import ClientType
 
 class Role(Enum):
@@ -29,9 +29,25 @@ class FinishReason(Enum):
     STOP = 'stop'
     
 class ModelResponse(BaseModel):
-    content: str # contenido de la respuesta
-    provider: ClientType # proveedor que realizo la respuesta
-    model: str # modelo exacto que realizo la respuesta
-    usage: Usage # esto tendra información sobre el consumo 
-    finish_reason: FinishReason # motivo de la finalizacion de la respuesta
+    content: str 
+    provider: ClientType 
+    model: str 
+    usage: Usage  
+    finish_reason: FinishReason 
+    
+class NivelCriticidad(str, Enum):
+    BAJA = "baja"
+    MEDIA = "media"
+    ALTA = "alta"
+
+class AnalisisTecnico(BaseModel):
+    tecnologias: list[str] = Field(
+        description="Lista de tecnologia, bases de datos, frameworks o herramientas identificadas en el texto"
+    )
+    nivel_de_criticidad: NivelCriticidad = Field(
+        description="Nivel de criticidad evaluado a partir del impacto tecnico descrito (baja, media o alta)"
+    )
+    resumen_tecnico: str = Field(
+        description="Resumen tecnico breve, claro y directo del problema o escenario analizado."
+    )
     
