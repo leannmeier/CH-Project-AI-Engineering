@@ -1,31 +1,27 @@
 import asyncio
-import json
-from chain import process_text
-from factory import LLMFactory
-from Config import ClientType
+from vectorstore import build_and_index_vectorstore
+from rag_chain import query_rag
 
 
 async def main():
-    texto_prueba = """
-    [ERROR CRÍTICO] 2026-03-29 14:32:10 - Fallo de conexión en clúster de MongoDB Atlas.
-    El servicio principal corriendo en Docker superó el tiempo de espera en las consultas.
-    La capa de caché en Redis no responde. FastAPI devuelve 500 en producción.
-    """
+    print("--- 1. Verificando/Indexando documentos en ./data ---")
+    # Ejecuta I/O de indexación
+    await asyncio.to_thread(build_and_index_vectorstore)
 
-    print("--- 1. Ejecución por defecto (OpenAI desde variables de entorno) ---")
+    print("\n--- 2. Probando la Cadena RAG con pregunta sobre el documento ---")
+    pregunta = "¿Qué información contiene el documento cargado?"
+    
     try:
-        resultado = await process_text(texto_prueba)
-        print(json.dumps(resultado.model_dump(), indent=2, ensure_ascii=False))
+        resultado = await query_rag("¿Qué información contiene el documento cargado?")
+        print(f"Pregunta: {resultado.question}")
+        print(f"Respuesta: {resultado.answer}\n")
+        print("--- Fuentes Utilizadas (Trazabilidad Real) ---")
+        for src in resultado.sources:
+            print(f"- Archivo: {src.source_file}")
+            print(f"  Snippet: {src.content_snippet}")
+            print(f"  Metadatos: {src.metadata}\n")
     except Exception as e:
-        print(f"Error: {e}")
-
-    print("\n--- 2. Ejemplo de ejecución pasando configuración personalizada ---")
-    try:
-        config_anthropic = LLMFactory.get_default_config(ClientType.ANTHROPIC)
-        resultado_anthropic = await process_text(texto_prueba, config=config_anthropic)
-        print(json.dumps(resultado_anthropic.model_dump(), indent=2, ensure_ascii=False))
-    except Exception as e:
-        print(f"Error: {e}")
+        print(f"\nError durante la ejecución del RAG: {e}")
 
 if __name__ == "__main__":
     asyncio.run(main())
