@@ -23,7 +23,7 @@ def load_documents(data_path: str = DATA_PATH) -> List[Document]:
     logger.info(f"Cargando documentos desde '{data_path}'...")
     documents = []
 
-    # Cargador para archivos PDF
+    # Cargador para archivos .pdf
     pdf_loader = DirectoryLoader(
         data_path,
         glob="**/*.pdf",
@@ -32,13 +32,15 @@ def load_documents(data_path: str = DATA_PATH) -> List[Document]:
     )
     documents.extend(pdf_loader.load())
 
-    # Cargador para archivos TXT
+    # Cargador para archivos .txt
     txt_loader = DirectoryLoader(
         data_path,
         glob="**/*.txt",
         loader_cls=TextLoader,
+        loader_kwargs={"encoding": "utf-8"},
         show_progress=True
     )
+    
     documents.extend(txt_loader.load())
 
     logger.info(f"Se cargaron {len(documents)} páginas/documentos en total.")
@@ -59,7 +61,7 @@ def split_documents(
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
         length_function=len,
-        add_start_index=True,  # Guarda el índice original del fragmento en los metadatos
+        add_start_index=True,
     )
     
     chunks = text_splitter.split_documents(documents)
@@ -68,12 +70,11 @@ def split_documents(
 
 
 if __name__ == "__main__":
-    # Prueba rápida del proceso de ingesta y fragmentación
     docs = load_documents()
     if docs:
         chunks = split_documents(docs)
-        print(f"\n--- Ejemplo del primer chunk de {len(chunks)} ---")
-        print("Contenido:", chunks[0].page_content[:200], "...")
-        print("Metadatos:", chunks[0].metadata)
+        print(f"\nEjemplo del primer chunk de {len(chunks)}")
+        print("Contenido:", chunks[0].page_content[:200])
+        print(f"\nMetadatos:", chunks[0].metadata)
     else:
         print("Agrega archivos .pdf o .txt en la carpeta './data' para probar la ingesta.")

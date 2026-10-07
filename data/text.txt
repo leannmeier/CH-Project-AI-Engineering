@@ -1,1 +1,3 @@
-Esto es un texto
+[ERROR CRITICO] Fallo de conexion en cluster de MongoDB Atlas...
+El proyecto utiliza Pydantic para la validación de datos de entrada y salida.
+Los embeddings se almacenan en Pinecone, una base de datos vectorial en la nube.
