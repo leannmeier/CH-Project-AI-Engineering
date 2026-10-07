@@ -25,6 +25,16 @@ Cliente asíncrono unificado para interactuar con múltiples proveedores de LLM 
 - **`evaluate.py`** — script de evaluación cuantitativa: ejecuta el recuperador híbrido contra un "Golden Set" de preguntas con una palabra clave esperada, y calcula **Precision@5** y **Recall@5** por pregunta y en promedio. No depende de ningún LLM (solo recuperación), así que corre sin necesidad de crédito de OpenAI/Anthropic.
 - **`main.py`** — con el flag `--evaluate` corre `evaluate.py` en lugar del flujo normal de consulta RAG.
 
+### Módulo 5 — Agente de razonamiento cíclico con LangGraph
+
+- **`src/graph.py`** — define el `StateGraph` (sobre `MessagesState`) con dos nodos: `agent` (invoca al LLM con las herramientas disponibles) y `tools` (`ToolNode` que ejecuta la herramienta elegida). Las aristas condicionales (`tools_condition`) deciden si el flujo vuelve a `tools` o termina, implementando el ciclo ReAct (razonar → actuar → observar → repetir). Expone `get_agent_executor()` como única fuente de verdad para compilar el grafo con un checkpointer.
+- **`src/tools.py`** — herramientas del agente: `buscar_cliente_por_email` y `obtener_pedidos_cliente` (datos mock de gestión de clientes), y `consultar_base_conocimiento` (reutiliza el recuperador híbrido del Módulo 4 para responder preguntas sobre la documentación indexada).
+- **`src/agent.py`** — `run_agent(query, thread_id)`, punto de entrada reutilizable que ejecuta una consulta sobre el grafo persistiendo el estado en SQLite (`AsyncSqliteSaver`) bajo el `thread_id` dado, con un límite de recursión para evitar loops infinitos.
+- **`main.py`** — demuestra el agente en dos turnos sobre el mismo `thread_id`: el primero dispara una cadena de 2 llamadas a herramientas (ReAct multi-paso), el segundo consulta sobre información mencionada en el turno anterior para verificar la persistencia real de memoria. Registra la traza de ejecución (`execution_trace.json`) usando `astream_events`.
+
+**Nota:** el LLM del agente usa Groq (`openai/gpt-oss-20b`) a través de `LLMFactory`/`Config`, agregado como proveedor adicional junto a OpenAI/Anthropic para evitar los bloqueos de crédito de esas dos cuentas durante el desarrollo.
+
+
 ## Requisitos
 
 - Python 3.12

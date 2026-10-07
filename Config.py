@@ -4,6 +4,7 @@ from pydantic import BaseModel, SecretStr, Field
 class ClientType(Enum):
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
+    GROQ = 'groq' # Como no dispongo de saldo en las cuentas de OpenAI y Anthropic, uso GROQ ya que tiene un free tier generoso para estas pruebas
 
 class Config(BaseModel):
     provider: ClientType

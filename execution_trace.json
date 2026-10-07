@@ -1,0 +1,60 @@
+[
+  {
+    "event": "chain_start",
+    "name": "LangGraph"
+  },
+  {
+    "event": "chain_start",
+    "name": "agent"
+  },
+  {
+    "event": "chain_start",
+    "name": "tools_condition"
+  },
+  {
+    "event": "chain_start",
+    "name": "tools"
+  },
+  {
+    "event": "tool_start",
+    "tool": "buscar_cliente_por_email",
+    "input": {
+      "email": "juan@mail.com"
+    }
+  },
+  {
+    "event": "tool_end",
+    "output": "content='{\"cliente_id\": \"102\", \"nombre\": \"Juan Perez\"}' name='buscar_cliente_por_email' tool_call_id='fc_6c4207d9-3787-4f50-8037-fe3a98568e43'"
+  },
+  {
+    "event": "chain_start",
+    "name": "agent"
+  },
+  {
+    "event": "chain_start",
+    "name": "tools_condition"
+  },
+  {
+    "event": "chain_start",
+    "name": "tools"
+  },
+  {
+    "event": "tool_start",
+    "tool": "obtener_pedidos_cliente",
+    "input": {
+      "cliente_id": "102"
+    }
+  },
+  {
+    "event": "tool_end",
+    "output": "content='{\"cliente_id\": \"102\", \"cantidad_pedidos\": 3, \"total_completado\": 14500, \"pedidos\": [{\"id_pedido\": \"P-001\", \"monto\": 4500, \"estado\": \"Completado\"}, {\"id_pedido\": \"P-002\", \"monto\": 10000, \"estado\": \"Completado\"}, {\"id_pedido\": \"P-003\", \"monto\": 2500, \"estado\": \"Cancelado\"}]}' name='obtener_pedidos_cliente' tool_call_id='fc_a5c257cc-ac9b-46a9-aee8-18db5755e9fb'"
+  },
+  {
+    "event": "chain_start",
+    "name": "agent"
+  },
+  {
+    "event": "chain_start",
+    "name": "tools_condition"
+  }
+]
