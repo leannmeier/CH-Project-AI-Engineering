@@ -34,6 +34,57 @@ Cliente asíncrono unificado para interactuar con múltiples proveedores de LLM 
 
 **Nota:** el LLM del agente usa Groq (`openai/gpt-oss-20b`) a través de `LLMFactory`/`Config`, agregado como proveedor adicional junto a OpenAI/Anthropic para evitar los bloqueos de crédito de esas dos cuentas durante el desarrollo.
 
+### Módulo 6 — Orquestador multi-agente con supervisor
+
+Sistema de tres nodos sobre LangGraph: un **supervisor** que decide el flujo y dos **agentes especializados** (investigación y análisis), con un estado compartido y persistencia en SQLite.
+
+#### Diagrama del grafo
+
+```mermaid
+flowchart TD
+    INICIO([Inicio]) --> S{Supervisor}
+    S -->|sin investigación o reintento| R[research_agent<br/>Tavily]
+    S -->|investigación lista y cálculo pedido| A[analyst_agent<br/>calculate_metrics]
+    S -->|análisis hecho, sin cálculo o fallo| FIN([Fin])
+    R --> S
+    A --> S
+```
+
+#### Componentes
+
+- **`state.py`** — `MultiAgentState`: mensajes, `next_agent`, `iteration_count`/`max_iterations`, `retry_count`, `research_data` (acumulativo, registra qué agente aportó qué), `analysis_result` y `task_status`.
+- **`src/agents/supervisor.py`** — decide el siguiente paso. El LLM propone con salida estructurada (`SupervisorOutput`, con `Literal` para los destinos) y el código valida la propuesta.
+- **`src/agents/research_agent.py`** — agente con Tavily. Conserva solo título, URL y contenido de cada resultado, tiene un límite de pasos propio y marca error si no obtuvo fuentes útiles. Distingue errores pasajeros (límite de uso, 429) de los definitivos.
+- **`src/agents/analyst_agent.py`** — agente con `calculate_metrics`. Solo marca éxito si la herramienta devolvió métricas válidas, y cita año y fuente de cada cifra.
+- **`src/graph.py`** — aristas condicionales con tipo de retorno `Literal` y una guarda adicional.
+- **`main.py`** — ejecuta los casos de prueba: `python main.py --case 1|2|3` (sin argumento corre los tres).
+
+#### Por qué una topología jerárquica
+
+El flujo depende de la pregunta: una consulta informativa termina tras investigar y una que pide cálculos pasa además por el analista. Un supervisor central permite auditar cada decisión (cada una se imprime con su razón) y aplicar límites en un solo lugar. El costo es que el supervisor es un punto único de falla, que se mitiga con las guardas descritas abajo.
+
+#### Manejo de conflictos y bucles
+
+- Tope de iteraciones (`max_iterations`) y límite de pasos propio en cada agente.
+- No se repite la investigación si ya fue exitosa.
+- No se deriva al analista si el usuario no pidió un cálculo, y no se cierra sin análisis si se pidió.
+- Un único reintento, solo para errores pasajeros. Los errores definitivos cierran con `failed` y el motivo real.
+- El cierre posterior al análisis se decide en código, sin llamar al modelo.
+
+#### Decisiones y compromisos
+
+- **El LLM propone, el código valida.** Se usa el modelo para entender la intención y reglas deterministas para impedir movimientos ilegales.
+- **Detección de cálculo por palabras clave** ("calcula", "promedio", "total", "suma", "métrica"). Es simple y predecible, pero no reconoce paráfrasis como "la media".
+- **Modelo:** `openai/gpt-oss-20b` servido por Groq, porque las cuentas de OpenAI y Anthropic no tenían crédito. Por los límites de tokens del plan gratuito, se acotan los resultados de búsqueda (`max_results=3`, truncado por fuente).
+- **Calidad de los datos:** las cifras provienen de búsquedas web y pueden mezclar años o fuentes. El sistema las cita pero no las verifica.
+
+#### Casos de prueba
+
+1. Consulta informativa sin cálculo: investiga y cierra.
+2. Búsqueda con cálculo ("población de Buenos Aires, Córdoba y Rosario y su promedio"): investiga, analiza y cierra.
+3. Consulta sin datos disponibles: falla de forma controlada con el motivo real.
+
+Demostración en video: [Casos de prueba](https://youtu.be/pGFE6rAPZFI)
 
 ## Requisitos
 

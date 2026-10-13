@@ -1,36 +1,50 @@
-from langchain_core.messages import SystemMessage
-from langgraph.graph import StateGraph, MessagesState
-from langgraph.prebuilt import ToolNode, tools_condition
+from typing import Literal
+from langgraph.graph import StateGraph, START, END
+from state import MultiAgentState
+from src.agents.supervisor import supervisor_node
+from src.agents.research_agent import research_node
+from src.agents.analyst_agent import analyst_node
 
-from Config import ClientType
-from factory import LLMFactory
-from src.tools import TOOLS
+def route_decision(state: MultiAgentState) -> Literal["research_agent", "analyst_agent", "__end__"]:
+    task_status = state.get("task_status", "pending")
+    if task_status == "failed":
+        return "__end__"
+        
+    messages = state.get("messages", [])
+    user_query = messages[0].content.lower() if messages else ""
+    requires_calculation = any(k in user_query for k in ["calculá", "calcula", "promedio", "total", "suma", "métrica"])
+    
+    next_agent = state.get("next_agent", "__end__")
 
-# Obtenemos la configuración por defecto configurada para GROQ
-config_llm = LLMFactory.get_default_config(provider=ClientType.GROQ)
+    if next_agent == "analyst_agent" and not requires_calculation:
+        print("⚠️ [Guarda Grafo]: Intento ilegal de derivar al analista sin cálculos solicitados. Forzando cierre (__end__).")
+        return "__end__"
 
-# Creamos el modelo a traves del Factory
-llm = LLMFactory.create_llm(config_llm)
-llm_with_tools = llm.bind_tools(TOOLS)
+    if next_agent in ["__end__", END]:
+        return "__end__"
 
-async def call_model(state: MessagesState):
-    messages = state["messages"]
-    system_prompt = SystemMessage(
-        content="Eres un asistente de soporte técnico y gestión de clientes"
-                "Responde con precisión apoyandote siempre en las herramientas disponibles"
+    return next_agent
+
+def get_multi_agent_executor(checkpointer=None):
+    workflow = StateGraph(MultiAgentState)
+
+    workflow.add_node("supervisor", supervisor_node)
+    workflow.add_node("research_agent", research_node)
+    workflow.add_node("analyst_agent", analyst_node)
+
+    workflow.add_edge(START, "supervisor")
+
+    workflow.add_conditional_edges(
+        "supervisor",
+        route_decision,
+        {
+            "research_agent": "research_agent",
+            "analyst_agent": "analyst_agent",
+            "__end__": END
+        }
     )
-    response = await llm_with_tools.ainvoke([system_prompt] + messages)
-    return {"messages": [response]}
 
-# Construcción del grafo
-builder = StateGraph(MessagesState)
-builder.add_node("agent", call_model)
-builder.add_node("tools", ToolNode(TOOLS))
+    workflow.add_edge("research_agent", "supervisor")
+    workflow.add_edge("analyst_agent", "supervisor")
 
-builder.set_entry_point("agent")
-builder.add_conditional_edges("agent", tools_condition)
-builder.add_edge("tools", "agent")
-
-# Única fuente de verdad para obtener el ejecutor compilado
-def get_agent_executor(checkpointer=None):
-    return builder.compile(checkpointer=checkpointer)
+    return workflow.compile(checkpointer=checkpointer)

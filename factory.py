@@ -1,6 +1,5 @@
 import os
 from dotenv import load_dotenv
-from groq import Groq
 
 from pydantic import SecretStr
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -36,6 +35,7 @@ class LLMFactory:
             return ChatGroq(
                 model=config.model,
                 api_key=SecretStr(api_key_str),
+                max_tokens=2048,
                 temperature=config.temperature
             )
         else:
@@ -43,10 +43,6 @@ class LLMFactory:
         
     @staticmethod
     def create_embeddings(config: Optional[Config] = None) -> Embeddings:
-        """
-        Retorna un modelo de embeddings local gratuito (all-MiniLM-L6-v2) 
-        para evitar errores de falta de cuota en APIs externas.
-        """
         return HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
         
     @staticmethod
@@ -59,7 +55,7 @@ class LLMFactory:
             model = "claude-3-5-sonnet-20241022"
         elif provider == ClientType.GROQ:
             api_key = os.environ.get("GROQ_API_KEY", "")
-            model = "openai/gpt-oss-20b" # Aca uso un modelo de OpenAI que es compatible con la infraestructura de Groq y que soporta tool calling
+            model = "openai/gpt-oss-20b"
         else:
             raise ValueError(f"Proveedor no válido: {provider}")
 
