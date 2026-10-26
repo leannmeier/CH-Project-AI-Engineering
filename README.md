@@ -86,11 +86,126 @@ El flujo depende de la pregunta: una consulta informativa termina tras investiga
 
 Demostración en video: [Casos de prueba](https://youtu.be/pGFE6rAPZFI)
 
+### Módulo 7 — API de producción con FastAPI, Redis y observabilidad
+
+El sistema multi-agente del Módulo 6 queda expuesto como una API asíncrona: una consulta se encola, se ejecuta en segundo plano y su estado se consulta por `job_id`. Antes de la acción crítica (publicar el reporte) el grafo se pausa y espera la aprobación de una persona.
+
+#### Arquitectura
+
+```mermaid
+flowchart LR
+    C[Cliente] -->|POST /tasks| API[FastAPI]
+    API -->|crea job PENDING| R[(Redis)]
+    API -->|202 + job_id| C
+    API -.->|tarea en segundo plano| W[Worker asíncrono]
+    W -->|estado del job| R
+    W --> G[Grafo LangGraph<br/>supervisor, investigador, analista]
+    G -->|checkpoints| R
+    G --> H{Aprobación humana}
+    H -->|WAITING_APPROVAL| R
+    C -->|POST /tasks/id/approve| API
+    API -.->|reanuda con Command| W
+    G -.->|trazas| P[Phoenix]
+```
+
+#### Estados de un job
+
+```mermaid
+stateDiagram-v2
+    [*] --> PENDING
+    PENDING --> RUNNING
+    RUNNING --> WAITING_APPROVAL: el grafo llega a la acción crítica
+    RUNNING --> FAILED: error del agente o excepción
+    WAITING_APPROVAL --> RUNNING: POST /approve
+    RUNNING --> DONE: aprobado y publicado
+    RUNNING --> REJECTED: un humano rechaza
+```
+
+#### Estructura
+
+- `app/main.py` — la API: encolado, consulta de estado y aprobación. Abre Redis y el checkpointer una sola vez al arrancar (lifespan).
+- `app/jobs.py` — modelo `Job` (Pydantic) y almacén de jobs en Redis con cliente asíncrono y TTL.
+- `app/worker.py` — ejecuta y reanuda el grafo en segundo plano. Toda excepción termina en `FAILED` con el motivo y su tipo (pasajero o definitivo).
+- `app/graph.py` — el orquestador del Módulo 6 más el nodo de aprobación humana, con el checkpointer de Redis (`AsyncRedisSaver`).
+- `app/hitl.py` — nodo Human-in-the-loop (`interrupt`) y la acción crítica simulada.
+- `app/observability.py` — trazas con Arize Phoenix (local).
+- `scripts/load_test.py` — prueba de 5 peticiones concurrentes.
+- `tests/test_api.py` — tests de la API con Redis simulado y nodos falsos.
+- `docker-compose.yml` — Redis Stack (y Phoenix como perfil opcional).
+- `screenshots/` — capturas de las trazas.
+
+#### Cómo correrlo
+
+1. Levantar Redis (necesita RedisJSON y RediSearch, por eso se usa Redis Stack):
+   ```bash
+   docker compose up -d
+   ```
+2. Opcional, para ver las trazas: `docker compose --profile observability up -d` o `pip install arize-phoenix && phoenix serve`. La interfaz queda en http://localhost:6006.
+3. Instalar dependencias y configurar `.env` (ver `.env.example`):
+   ```bash
+   pip install -r requirements.txt
+   ```
+4. Arrancar la API desde la raíz del repo:
+   ```bash
+   uvicorn app.main:app --port 8000
+   ```
+5. Probar el flujo completo:
+   ```bash
+   # encolar (responde al instante con el job_id)
+   curl -X POST http://localhost:8000/tasks -H "Content-Type: application/json" \
+        -d '{"query": "Buscá la población de Buenos Aires, Córdoba y Rosario y calculá el promedio."}'
+
+   # consultar el estado (cuando llega a WAITING_APPROVAL trae el borrador a aprobar)
+   curl http://localhost:8000/tasks/<job_id>
+
+   # aprobar o rechazar la publicación del reporte
+   curl -X POST http://localhost:8000/tasks/<job_id>/approve -H "Content-Type: application/json" \
+        -d '{"approved": true, "comment": "ok"}'
+   ```
+6. Prueba de concurrencia y tests:
+   ```bash
+   python scripts/load_test.py --approve
+   pytest tests/test_api.py -v
+   ```
+
+#### Manejo de fallos
+
+| Situación | Resultado |
+|---|---|
+| El agente no encuentra resultados | `FAILED`, con el motivo en `error` y `error_type: permanent` |
+| Límite de uso del proveedor (429) | `FAILED`, con `error_type: transient` |
+| Excepción inesperada en el grafo | `FAILED`, con el nombre y mensaje de la excepción |
+| Aprobar un job que no espera aprobación | `409` |
+| Job inexistente o expirado | `404` |
+| Redis caído al arrancar | la API falla al iniciar con un mensaje claro |
+
+#### Decisiones y límites
+
+- **Worker dentro del proceso de la API.** La consigna acepta una tarea asíncrona simple. Si el proceso se cae con un job en ejecución, el job queda en `RUNNING` hasta que expira, aunque sus checkpoints siguen en Redis. Un worker separado con cola real (por ejemplo, Redis Streams o Celery) sería el siguiente paso.
+- **Acción crítica simulada.** "Publicar" guarda el reporte en Redis (`report:<job_id>`). La aprobación humana es lo que se está demostrando.
+- **Límites de Groq.** Con el plan gratuito, varias corridas simultáneas del sistema multi-agente pueden recibir 429. Esos jobs terminan en `FAILED` con `error_type: transient`.
+- **TTL.** Los jobs expiran a las 24 horas (`JOB_TTL_SECONDS`).
+
+#### Evidencia de observabilidad
+
+Capturas de las trazas de Phoenix en `screenshots/`: una ejecución completa (supervisor, investigador, analista) y la prueba de 5 peticiones concurrentes con sus latencias.
+
+#### Verificación
+
+Qué se probó automáticamente y qué se verifica a mano:
+
+- **Automático (`pytest`):** estados del job, pausa y reanudación con aprobación, rechazo, fallos que llegan a `FAILED`, errores 404/409/422 y 5 jobs concurrentes, usando Redis simulado y nodos falsos.
+- **A mano:** Redis Stack real con el checkpointer, las trazas en Phoenix y el sistema completo con los modelos reales.
+
 ## Requisitos
 
 - Python 3.12
-- Una cuenta con API key de Anthropic y/o OpenAI (con crédito cargado para poder hacer llamadas reales de generación)
-- Una cuenta de Pinecone (free tier) con su API key
+- Docker Desktop (para Redis Stack en el Módulo 7)
+- Claves de API:
+  - **Groq** y **Tavily**: agentes de los Módulos 5 a 7 y búsqueda web del investigador.
+  - **Pinecone** (plan gratuito): índice vectorial del Módulo 4.
+  - **OpenAI** y/o **Anthropic** (opcionales, con crédito cargado): clientes de los Módulos 1 y 2.
+
 
 ## Instalación
 
@@ -106,29 +221,44 @@ pip install -r requirements.txt
 
 ## Configuración
 
-Copiá `.env.example` a `.env` y completá tus credenciales reales:
+Copiá `.env.example` a `.env` y completá tus claves reales (el archivo `.env` está en `.gitignore` y nunca se sube al repositorio):
 
 ```bash
 cp .env.example .env
 ```
-ANTHROPIC_API_KEY=tu-api-key-real-de-anthropic
-OPENAI_API_KEY=tu-api-key-real-de-openai
-PINECONE_API_KEY=tu-api-key-real-de-pinecone
-INDEX_NAME=rag-hybrid-index
+
+| Variable | Módulos | Para qué se usa |
+|---|---|---|
+| `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | 1, 2 | Clientes y pipeline con salida estructurada |
+| `GROQ_API_KEY` | 5, 6, 7 | Modelo de los agentes (`openai/gpt-oss-20b` servido por Groq) |
+| `TAVILY_API_KEY` | 6, 7 | Búsqueda web del agente investigador |
+| `PINECONE_API_KEY`, `INDEX_NAME` | 4 | Índice vectorial en la nube |
+| `REDIS_URL`, `JOB_TTL_SECONDS` | 7 | Redis Stack y duración de los jobs |
+| `ENABLE_TRACING`, `PHOENIX_COLLECTOR_ENDPOINT`, `PHOENIX_PROJECT_NAME` | 7 | Trazas con Phoenix (`ENABLE_TRACING=0` si no está corriendo) |
 
 ## Uso
 
-1. Colocá tus documentos (`.pdf` o `.txt`, codificados en UTF-8) en la carpeta `./data`.
-2. Ejecutar el flujo completo (indexación + consulta RAG híbrida con generación de respuesta):
+Cada módulo se ejecuta por separado, desde la raíz del repo y con el entorno virtual activado.
+
+**Módulo 4 — RAG híbrido** (necesita `PINECONE_API_KEY` y documentos `.pdf` o `.txt` en UTF-8 dentro de `./data`):
+
 ```bash
-python main.py
-```
-3. Ejecutar solo la evaluación cuantitativa del recuperador (no requiere crédito de LLM):
-```bash
-python main.py --evaluate
+# indexar los documentos en Pinecone (una sola vez)
+python -c "from vectorstore import build_and_index_vectorstore; build_and_index_vectorstore()"
+
+# evaluación cuantitativa (Precision@5 y Recall@5, no necesita crédito de LLM)
+python evaluate.py
 ```
 
-La primera ejecución crea el índice en Pinecone e indexa los documentos; las siguientes reutilizan el índice existente. Si cambiás el contenido de `./data`, hace falta reindexar (cambiando `INDEX_NAME` a uno nuevo, o vaciando el índice existente desde el dashboard de Pinecone).
+**Módulo 6 — Orquestador multi-agente** (necesita `GROQ_API_KEY` y `TAVILY_API_KEY`):
+
+```bash
+python main.py --case 1   # también 2 o 3; sin argumento corre los tres casos
+```
+
+**Módulo 7 — API de producción:** ver "Cómo correrlo" en la sección del Módulo 7.
+
+Si cambiás el contenido de `./data`, hace falta reindexar: usá un `INDEX_NAME` nuevo o vaciá el índice desde el panel de Pinecone.
 
 ## Notas de implementación
 
