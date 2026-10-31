@@ -1,4 +1,7 @@
 .venv/
 .env
 __pycache__/
+# Bases de datos locales
 *.sqlite
+*.sqlite-shm
+*.sqlite-wal
