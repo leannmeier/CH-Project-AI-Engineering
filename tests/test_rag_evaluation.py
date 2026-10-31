@@ -45,7 +45,7 @@ def test_recall_and_precision_use_source_not_keywords():
 
 def test_source_normalization_handles_absolute_and_windows_style():
     assert normalize_source("/repo/data/pathlib/01-rutas.txt") == "data/pathlib/01-rutas.txt"
-    assert normalize_source(r"C:\\repo\\data\\pathlib\\01-rutas.txt") == "data/pathlib/01-rutas.txt"
+    assert normalize_source(r"C:\repo\data\pathlib\01-rutas.txt") == "data/pathlib/01-rutas.txt"
 
 
 def test_missing_source_returns_no_hits():
