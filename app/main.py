@@ -115,3 +115,13 @@ async def approve_task(job_id: str, body: ApprovalRequest, request: Request):
     await store.update(job_id, status=JobStatus.RUNNING, approval_request=None)
     _spawn(request.app, resume_job(request.app.state.graph, store, job_id, body.approved, body.comment))
     return {"job_id": job_id, "status": JobStatus.RUNNING}
+
+
+@app.post("/knowledge/search", response_model=KnowledgeResponse)
+async def knowledge_search(body: KnowledgeRequest):
+    """Consulta el recuperador RAG híbrido con fuentes y límite de cinco resultados."""
+    try:
+        return await search_knowledge(body.question, body.k)
+    except Exception:
+        logger.exception("No fue posible consultar la base documental")
+        raise HTTPException(status_code=503, detail="Servicio de conocimiento no disponible")
