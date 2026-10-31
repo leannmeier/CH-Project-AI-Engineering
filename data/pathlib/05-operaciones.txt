@@ -1,0 +1,10 @@
+Documentación técnica de Python: pathlib — crear, renombrar y eliminar
+
+Fuente oficial: https://docs.python.org/3/library/pathlib.html
+Biblioteca: pathlib (biblioteca estándar de Python).
+
+Path.mkdir(parents=True, exist_ok=True) crea un directorio y, con parents=True, también sus directorios padres faltantes. exist_ok=True permite que la operación no falle únicamente porque el directorio ya existe. Path.touch() crea un archivo vacío si no existe y actualiza sus marcas de tiempo cuando existe, sujeto a los argumentos utilizados.
+
+Path.rename(destino) cambia el nombre o ubicación de una ruta. Path.replace(destino) reemplaza el destino según las reglas del sistema operativo. Path.unlink() elimina un archivo o enlace simbólico; no elimina directorios. Para eliminar un directorio vacío se utiliza Path.rmdir().
+
+Las operaciones de escritura, renombrado y eliminación pueden fallar por permisos, por uso simultáneo del archivo o por rutas inexistentes. Antes de emplearlas en datos importantes se recomienda gestionar excepciones y respaldos.

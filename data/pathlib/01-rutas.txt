@@ -1,0 +1,10 @@
+Documentación técnica de Python: pathlib — construcción de rutas
+
+Fuente oficial: https://docs.python.org/3/library/pathlib.html
+Biblioteca: pathlib (biblioteca estándar de Python).
+
+La clase pathlib.Path permite representar rutas del sistema de archivos como objetos. Se construye una ruta con Path("carpeta") o Path("carpeta/archivo.txt"). El operador / compone rutas: Path("datos") / "archivo.csv" representa un archivo dentro de la carpeta datos. Path.home() obtiene el directorio personal del usuario y Path.cwd() obtiene el directorio de trabajo actual.
+
+La propiedad name devuelve el último componente de la ruta; suffix devuelve la extensión, por ejemplo ".txt"; stem devuelve el nombre sin extensión; parent devuelve el directorio padre. with_suffix(".md") produce una ruta equivalente con otra extensión, sin modificar el archivo original.
+
+El uso de objetos Path evita concatenar manualmente separadores de carpetas y mejora la portabilidad entre sistemas operativos.
