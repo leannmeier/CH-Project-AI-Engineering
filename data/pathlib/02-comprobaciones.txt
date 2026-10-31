@@ -1,0 +1,10 @@
+Documentación técnica de Python: pathlib — inspección de archivos
+
+Fuente oficial: https://docs.python.org/3/library/pathlib.html
+Biblioteca: pathlib (biblioteca estándar de Python).
+
+Path.exists() comprueba si la ruta apunta a un elemento existente. Path.is_file() determina si la ruta corresponde a un archivo regular; Path.is_dir() determina si corresponde a un directorio. Estas comprobaciones ayudan a validar una ruta antes de ejecutar operaciones, aunque otro proceso podría modificar el archivo entre la comprobación y el uso.
+
+Path.stat() devuelve información del sistema de archivos, incluyendo st_size para obtener el tamaño del archivo en bytes. Path.resolve() produce una ruta absoluta resolviendo componentes y enlaces simbólicos según el entorno. Path.absolute() obtiene una ruta absoluta sin el mismo comportamiento de resolución de enlaces.
+
+Por ejemplo, ruta = Path("config.json") seguido de ruta.is_file() permite comprobar si existe un archivo de configuración antes de leerlo. Para evitar condiciones de carrera, también se deben manejar excepciones como FileNotFoundError.
