@@ -1,0 +1,10 @@
+Documentación técnica de Python: pathlib — listar directorios y buscar archivos
+
+Fuente oficial: https://docs.python.org/3/library/pathlib.html
+Biblioteca: pathlib (biblioteca estándar de Python).
+
+Path.iterdir() produce los elementos hijos directos de un directorio, sin recorrer subdirectorios de forma recursiva. Path.glob("*.py") busca rutas que coinciden con un patrón dentro del directorio, por ejemplo archivos Python. Path.rglob("*.py") busca recursivamente en subdirectorios y permite localizar archivos con esa extensión en un árbol de carpetas.
+
+Path.glob("**/*.txt") es otra forma de expresar búsquedas recursivas mediante el patrón glob. Los resultados son objetos Path y pueden filtrarse usando is_file() o is_dir(). El orden de iteración de los resultados no está garantizado, por lo que se puede usar sorted() si una aplicación necesita orden estable.
+
+Ejemplo conceptual: for archivo in Path("proyecto").rglob("*.py") recorre los archivos Python del proyecto y permite inspeccionar cada ruta.
