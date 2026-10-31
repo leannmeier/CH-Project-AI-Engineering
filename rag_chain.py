@@ -10,7 +10,7 @@ from langchain_core.documents import Document
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import RunnableParallel, RunnablePassthrough
+from langchain_core.runnables import RunnableLambda, RunnableParallel, RunnablePassthrough
 
 from Config import ClientType, Config
 from factory import LLMFactory
@@ -124,6 +124,38 @@ def build_hybrid_retriever(
     return vector_retriever
 
 
+class RAGSystem:
+    """Encapsula la recuperación híbrida y garantiza un máximo de k documentos.
+
+    Mantiene build_hybrid_retriever() como interfaz histórica para no romper
+    consumidores de entregas anteriores. El EnsembleRetriever combina BM25
+    y Pinecone; el límite se aplica DESPUÉS de la fusión de resultados.
+    """
+
+    def __init__(
+        self,
+        config: Optional[Config] = None,
+        k: int = 5,
+        retriever=None,
+    ):
+        if k < 1:
+            raise ValueError("k debe ser al menos 1")
+        self.k = k
+        self.retriever = retriever if retriever is not None else build_hybrid_retriever(config, k=k)
+
+    def retrieve(self, question: str) -> List[Document]:
+        """Devuelve los primeros k documentos combinados, sin generar respuesta."""
+        return list(self.retriever.invoke(question))[: self.k]
+
+    async def aretrieve(self, question: str) -> List[Document]:
+        """Versión asíncrona compatible con pipelines LCEL."""
+        return list(await self.retriever.ainvoke(question))[: self.k]
+
+    def as_runnable(self) -> RunnableLambda:
+        """Adaptador que conserva el límite top-k en la cadena de generación."""
+        return RunnableLambda(self.retrieve, afunc=self.aretrieve)
+
+
 # 3. Construcción del Pipeline LCEL Paralelizado
 def build_rag_chain(llm: BaseChatModel, retriever):
     """Construye la cadena RAG preservando tanto los documentos originales como la generación"""
@@ -169,9 +201,9 @@ async def query_rag(
     if llm is None:
         llm = LLMFactory.create_llm(config)
         
-    retriever = await asyncio.to_thread(build_hybrid_retriever, config)
+    rag_system = await asyncio.to_thread(RAGSystem, config)
 
-    chain = build_rag_chain(llm, retriever)
+    chain = build_rag_chain(llm, rag_system.as_runnable())
 
     try:
         raw_result = await chain.ainvoke(query_input.question)
