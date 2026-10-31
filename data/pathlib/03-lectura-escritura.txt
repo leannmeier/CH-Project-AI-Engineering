@@ -1,0 +1,10 @@
+Documentación técnica de Python: pathlib — lectura y escritura de texto
+
+Fuente oficial: https://docs.python.org/3/library/pathlib.html
+Biblioteca: pathlib (biblioteca estándar de Python).
+
+Path.read_text(encoding="utf-8") abre un archivo de texto, lee su contenido completo y devuelve un string. Path.write_text("contenido", encoding="utf-8") escribe texto en el archivo y devuelve la cantidad de caracteres escritos. write_text sobrescribe el contenido del archivo si ya existe, de modo que debe usarse con cuidado.
+
+Para datos binarios se usan Path.read_bytes() y Path.write_bytes(datos). Path.open() permite un manejo más flexible: por ejemplo, with ruta.open("a", encoding="utf-8") as archivo: archivo.write("nueva línea") agrega contenido utilizando modo append. El context manager garantiza el cierre del archivo.
+
+Las operaciones pueden lanzar OSError o FileNotFoundError, por lo que el código debe contemplar errores de permisos y rutas inexistentes. Si los archivos son grandes, conviene leerlos por partes con open en lugar de cargarlos por completo con read_text.
