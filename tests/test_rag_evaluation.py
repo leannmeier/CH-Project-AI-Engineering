@@ -1,6 +1,6 @@
 """Regresiones del Módulo 4; no requieren Pinecone, Redis ni claves API."""
 
-import pytest
+import asyncio
 from langchain_core.documents import Document
 
 from evaluate import GOLDEN_SET, normalize_source, score_retrieval, run_evaluation
@@ -25,12 +25,11 @@ def test_rag_system_enforces_top_five_after_hybrid_fusion():
     assert [doc.page_content for doc in system.retrieve("consulta")] == [str(i) for i in range(5)]
 
 
-@pytest.mark.asyncio
-async def test_rag_system_async_top_five():
+def test_rag_system_async_top_five():
     docs = [Document(page_content=str(i)) for i in range(8)]
     system = RAGSystem(k=5, retriever=FakeRetriever(docs))
-    assert len(await system.aretrieve("consulta")) == 5
-    assert len(await system.as_runnable().ainvoke("consulta")) == 5
+    assert len(asyncio.run(system.aretrieve("consulta"))) == 5
+    assert len(asyncio.run(system.as_runnable().ainvoke("consulta"))) == 5
 
 
 def test_recall_and_precision_use_source_not_keywords():
