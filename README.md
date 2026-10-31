@@ -21,8 +21,8 @@ Cliente asíncrono unificado para interactuar con múltiples proveedores de LLM 
 
 ### Módulo 4 — RAG avanzado y escalable con Pinecone
 - **`vectorstore.py`** — migrado de ChromaDB local a **Pinecone Serverless** (`PineconeVectorStore`). Crea el índice automáticamente si no existe, con dimensión ajustada al modelo de embeddings local (`all-MiniLM-L6-v2`, 384 dimensiones) y métrica coseno. Sigue usando embeddings locales de HuggingFace para no depender de crédito de API.
-- **`rag_chain.py`** — `build_hybrid_retriever` combina un retriever **vectorial** (Pinecone) con un retriever **léxico** (`BM25Retriever`, local) mediante `EnsembleRetriever` (ponderación 60% vectorial / 40% léxico), para cubrir tanto similitud semántica como coincidencias exactas de términos.
-- **`evaluate.py`** — script de evaluación cuantitativa: ejecuta el recuperador híbrido contra un "Golden Set" de preguntas con una palabra clave esperada, y calcula **Precision@5** y **Recall@5** por pregunta y en promedio. No depende de ningún LLM (solo recuperación), así que corre sin necesidad de crédito de OpenAI/Anthropic.
+- **`rag_chain.py`** — `RAGSystem` encapsula la recuperación con top-5 garantizado tras la fusión; se mantiene `build_hybrid_retriever` por compatibilidad. Combina un retriever **vectorial** (Pinecone) con un retriever **léxico** (`BM25Retriever`, local) mediante `EnsembleRetriever` (ponderación 60% vectorial / 40% léxico), para cubrir tanto similitud semántica como coincidencias exactas de términos.
+- **`evaluate.py`** — benchmark de **cinco preguntas con documentos fuente conocidos**, que calcula **Precision@5** sobre chunks recuperados y **Recall@5** sobre fuentes esperadas utilizando `metadata["source"]`, sin depender de palabras clave. No depende de ningún LLM (solo recuperación), así que corre sin necesidad de crédito de OpenAI/Anthropic.
 - **`main.py`** — con el flag `--evaluate` corre `evaluate.py` en lugar del flujo normal de consulta RAG.
 
 ### Módulo 5 — Agente de razonamiento cíclico con LangGraph
@@ -271,3 +271,68 @@ Si cambiás el contenido de `./data`, hace falta reindexar: usá un `INDEX_NAME`
 
 ## Autor
 Meier Leandro Agustín — Analista de Sistemas
+## Corrección incremental del Módulo 4 (posterior a la entrega 7)
+
+Esta corrección se desarrolló sin cambiar el contrato de la API de FastAPI, el grafo
+Supervisor, el flujo HITL ni las funciones públicas existentes de los agentes.
+
+### Dataset y procedencia
+
+En `data/pathlib/` se incluyen **cinco fichas técnicas adaptadas y resumidas**
+sobre la biblioteca estándar `pathlib` de Python, basadas en la [documentación
+oficial](https://docs.python.org/3/library/pathlib.html). No son una reproducción
+literal de la documentación oficial. Cada ficha tiene un tema y una ruta
+diferente que permite verificar el documento fuente de cada pregunta.
+
+`ingest.py` incluye los `.txt` de subcarpetas; `TextLoader` conserva el
+campo `source` (ruta del archivo) y `RecursiveCharacterTextSplitter`
+propaga los metadatos a cada chunk.
+
+### Cómo replicar la indexación de Pinecone
+
+1. Usar Python **3.12+** y configurar `.env` a partir de `.env.example`.
+   Configurar `PINECONE_API_KEY` e `INDEX_NAME`. La dimensión actual es
+   **384**, correspondiente a `all-MiniLM-L6-v2`; no reutilizar un índice
+   con otra dimensión o con otro modelo de embeddings.
+2. Instalar dependencias: `python -m pip install -r requirements.txt`.
+3. Para evitar contaminar un índice ya utilizado por otras entregas,
+   asignar a `INDEX_NAME` **un nombre nuevo de índice de pruebas**.
+4. Indexar los documentos del directorio `data/` (incluidas las fichas):
+   `python -c "from vectorstore import build_and_index_vectorstore; build_and_index_vectorstore()"`.
+5. Ejecutar `python evaluate.py` y revisar los cinco resultados y los
+   promedios de las dos métricas.
+
+**Atención:** `build_and_index_vectorstore()` agrega chunks; no elimina
+vectores previos ni garantiza actualizaciones idempotentes. Usá un índice
+nuevo para una evaluación limpia. El archivo legado `data/text.txt` se
+conserva por compatibilidad, pero **no forma parte del Golden Set**.
+Para el benchmark, cada fuente esperada está en `data/pathlib/`.
+Un entorno desconectado de Pinecone no puede ejecutar la evaluación real.
+
+### Interpretación de métricas
+
+- `Recall@5` = cantidad de fuentes correctas presentes / cantidad de fuentes
+  esperadas para la pregunta.
+- `Precision@5` = cantidad de **chunks** recuperados de fuentes correctas /
+  cinco resultados posibles. Diferentes chunks de un mismo archivo cuentan
+  como distintos resultados en precisión, no en recall.
+- Estas métricas comprueban procedencia documental, **no validan la veracidad
+  semántica** de cada chunk. Los resultados son orientativos y deben
+  corroborarse con el contexto recuperado.
+
+### Pruebas de regresión
+
+```bash
+python -m pytest tests/test_rag_evaluation.py -v
+python -m pytest tests/test_api.py -v
+```
+
+Las primeras usan recuperadores simulados para comprobar top-5, método
+asíncrono, metadatos y benchmark sin consumir créditos ni conectar a
+Pinecone. Las segundas conservan las pruebas de la entrega 7 con Redis simulado.
+
+Estas pruebas no sustituyen verificar **en un entorno limpio** la instalación
+de dependencias, la indexación real, ni el flujo completo de FastAPI, Redis y
+trazas de Phoenix. `requirements.txt` es un conjunto amplio de versiones
+fijadas; `pywin32` se restringe a Windows para evitar un fallo inmediato
+en otros sistemas operativos.
