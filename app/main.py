@@ -26,6 +26,7 @@ from fastapi import FastAPI, HTTPException, Request  # noqa: E402
 from pydantic import BaseModel, Field  # noqa: E402
 
 from app.graph import build_graph, open_checkpointer  # noqa: E402
+from app.knowledge import KnowledgeRequest, KnowledgeResponse, search_knowledge  # noqa: E402
 from app.jobs import REDIS_URL, Job, JobStatus, JobStore  # noqa: E402
 from app.worker import resume_job, run_job  # noqa: E402
 
@@ -114,3 +115,13 @@ async def approve_task(job_id: str, body: ApprovalRequest, request: Request):
     await store.update(job_id, status=JobStatus.RUNNING, approval_request=None)
     _spawn(request.app, resume_job(request.app.state.graph, store, job_id, body.approved, body.comment))
     return {"job_id": job_id, "status": JobStatus.RUNNING}
+
+
+@app.post("/knowledge/search", response_model=KnowledgeResponse)
+async def knowledge_search(body: KnowledgeRequest):
+    """Consulta el recuperador RAG híbrido con fuentes y límite de cinco resultados."""
+    try:
+        return await search_knowledge(body.question, body.k)
+    except Exception:
+        logger.exception("No fue posible consultar la base documental")
+        raise HTTPException(status_code=503, detail="Servicio de conocimiento no disponible")
