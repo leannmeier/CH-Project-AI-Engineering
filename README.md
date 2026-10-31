@@ -1,338 +1,365 @@
-# Sistema Intelligence — Unified Async LLM Client
+# Sistema Intelligence
 
-Cliente asíncrono unificado para interactuar con múltiples proveedores de LLM (Anthropic y OpenAI) bajo una única interfaz común, con validación de datos vía Pydantic, soporte de streaming, pipelines LCEL con salida estructurada/resiliente, y un sistema RAG avanzado escalable en Pinecone con recuperación híbrida.
+**Plataforma de inteligencia artificial con recuperación aumentada (RAG), orquestación multiagente, API asíncrona, persistencia y observabilidad.**
+
+Proyecto integrador del curso **AI Engineering de Coderhouse**, desarrollado en Python 3.12+ a partir de entregas incrementales. Reúne clientes de modelos de lenguaje, pipelines LangChain, un recuperador híbrido de documentación técnica, agentes LangGraph con Supervisor, una API FastAPI, Redis Stack y trazas en Arize Phoenix.
+
+> **Alcance real de la integración:** una única API expone tanto los trabajos multiagente (`/tasks`) como la recuperación documental (`/knowledge/search`). Actualmente el Supervisor investiga mediante Tavily; **no selecciona automáticamente el RAG como herramienta**. El endpoint RAG recupera documentos y fuentes, pero no genera una respuesta con LLM.
+
+## Contenido
+
+1. [Qué hace el sistema](#qué-hace-el-sistema)
+2. [Arquitectura](#arquitectura)
+3. [Tecnologías y componentes](#tecnologías-y-componentes)
+4. [Requisitos e instalación](#requisitos-e-instalación)
+5. [Inicio local](#inicio-local)
+6. [Uso de la API](#uso-de-la-api)
+7. [RAG e indexación](#rag-e-indexación)
+8. [Pruebas y resultados](#pruebas-y-resultados)
+9. [Observabilidad y evidencias](#observabilidad-y-evidencias)
+10. [Decisiones y limitaciones](#decisiones-y-limitaciones)
+11. [Evolución académica](#evolución-académica)
+
+## Qué hace el sistema
+
+El proyecto ofrece dos flujos de trabajo complementarios:
+
+- **Orquestación multiagente:** recibe una consulta, crea un trabajo asíncrono, investiga fuentes web con un agente especializado, realiza cálculos cuando corresponde y solicita aprobación humana antes de publicar un informe en Redis.
+- **Consulta de conocimiento documental:** busca en documentación técnica indexada en Pinecone y en un recuperador BM25 local, fusiona los resultados y devuelve hasta cinco fragmentos con su procedencia.
+
+La misma aplicación ofrece seguimiento de trabajos, validación mediante Pydantic y trazabilidad mediante Phoenix.
 
 ## Arquitectura
 
-### Módulo 1 — Cliente async unificado
-- **`BaseLLMClient`** — clase abstracta (ABC) que define el contrato común: `generate_response` (respuesta completa) y `generate_response_stream` (generador asíncrono de tokens).
-- **`AnthropicClient`** / **`OpenAIClient`** (en `models/`) — implementaciones concretas del contrato, cada una traduciendo el formato específico de su SDK a los esquemas propios del proyecto.
-- **`schemas.py`** — modelos Pydantic del proyecto (`ChatMessage`, `ModelResponse`/`Usage`, `FinishReason`, `AnalisisTecnico`).
-- **`Config.py`** — configuración validada con Pydantic (proveedor, modelo, API key protegida con `SecretStr`, temperatura 0-2, `max_tokens` ≥ 1).
-- **`exceptions.py`** — `LLMClientError`, excepción propia que envuelve los errores específicos de cada SDK bajo un solo tipo genérico.
-- **`factory.py`** — `LLMFactory`, resuelve el cliente LLM (`ChatOpenAI`/`ChatAnthropic`) y el modelo de embeddings correctos a partir de `Config.provider`.
-
-### Módulo 2 — Pipeline LCEL con salida estructurada
-- **`chain.py`** — pipeline (`prompt | llm.with_structured_output(AnalisisTecnico)`) que analiza un texto libre y devuelve un objeto validado (tecnologías, criticidad, resumen). Incluye reintentos automáticos con backoff exponencial (`with_retry`) ante fallos transitorios.
-
-### Módulo 3 — RAG local con ChromaDB
-- **`ingest.py`** — carga documentos (`.pdf`/`.txt`, UTF-8) desde `./data` y los fragmenta con `RecursiveCharacterTextSplitter` (chunk_size=800, overlap=150), preservando metadata de origen.
-- Pipeline RAG local inicial sobre ChromaDB, luego migrado a Pinecone en el Módulo 4 (ver abajo).
-
-### Módulo 4 — RAG avanzado y escalable con Pinecone
-- **`vectorstore.py`** — migrado de ChromaDB local a **Pinecone Serverless** (`PineconeVectorStore`). Crea el índice automáticamente si no existe, con dimensión ajustada al modelo de embeddings local (`all-MiniLM-L6-v2`, 384 dimensiones) y métrica coseno. Sigue usando embeddings locales de HuggingFace para no depender de crédito de API.
-- **`rag_chain.py`** — `RAGSystem` encapsula la recuperación con top-5 garantizado tras la fusión; se mantiene `build_hybrid_retriever` por compatibilidad. Combina un retriever **vectorial** (Pinecone) con un retriever **léxico** (`BM25Retriever`, local) mediante `EnsembleRetriever` (ponderación 60% vectorial / 40% léxico), para cubrir tanto similitud semántica como coincidencias exactas de términos.
-- **`evaluate.py`** — benchmark de **cinco preguntas con documentos fuente conocidos**, que calcula **Precision@5** sobre chunks recuperados y **Recall@5** sobre fuentes esperadas utilizando `metadata["source"]`, sin depender de palabras clave. No depende de ningún LLM (solo recuperación), así que corre sin necesidad de crédito de OpenAI/Anthropic.
-- **`main.py`** — con el flag `--evaluate` corre `evaluate.py` en lugar del flujo normal de consulta RAG.
-
-### Módulo 5 — Agente de razonamiento cíclico con LangGraph
-
-- **`src/graph.py`** — define el `StateGraph` (sobre `MessagesState`) con dos nodos: `agent` (invoca al LLM con las herramientas disponibles) y `tools` (`ToolNode` que ejecuta la herramienta elegida). Las aristas condicionales (`tools_condition`) deciden si el flujo vuelve a `tools` o termina, implementando el ciclo ReAct (razonar → actuar → observar → repetir). Expone `get_agent_executor()` como única fuente de verdad para compilar el grafo con un checkpointer.
-- **`src/tools.py`** — herramientas del agente: `buscar_cliente_por_email` y `obtener_pedidos_cliente` (datos mock de gestión de clientes), y `consultar_base_conocimiento` (reutiliza el recuperador híbrido del Módulo 4 para responder preguntas sobre la documentación indexada).
-- **`src/agent.py`** — `run_agent(query, thread_id)`, punto de entrada reutilizable que ejecuta una consulta sobre el grafo persistiendo el estado en SQLite (`AsyncSqliteSaver`) bajo el `thread_id` dado, con un límite de recursión para evitar loops infinitos.
-- **`main.py`** — demuestra el agente en dos turnos sobre el mismo `thread_id`: el primero dispara una cadena de 2 llamadas a herramientas (ReAct multi-paso), el segundo consulta sobre información mencionada en el turno anterior para verificar la persistencia real de memoria. Registra la traza de ejecución (`execution_trace.json`) usando `astream_events`.
-
-**Nota:** el LLM del agente usa Groq (`openai/gpt-oss-20b`) a través de `LLMFactory`/`Config`, agregado como proveedor adicional junto a OpenAI/Anthropic para evitar los bloqueos de crédito de esas dos cuentas durante el desarrollo.
-
-### Módulo 6 — Orquestador multi-agente con supervisor
-
-Sistema de tres nodos sobre LangGraph: un **supervisor** que decide el flujo y dos **agentes especializados** (investigación y análisis), con un estado compartido y persistencia en SQLite.
-
-#### Diagrama del grafo
-
 ```mermaid
 flowchart TD
-    INICIO([Inicio]) --> S{Supervisor}
-    S -->|sin investigación o reintento| R[research_agent<br/>Tavily]
-    S -->|investigación lista y cálculo pedido| A[analyst_agent<br/>calculate_metrics]
-    S -->|análisis hecho, sin cálculo o fallo| FIN([Fin])
+    C[Cliente / Swagger] --> API[FastAPI]
+    API -->|POST /tasks| JS[JobStore / Redis]
+    API -->|crea tarea async| W[Worker en proceso]
+    W --> S[Supervisor LangGraph]
+    S -->|investigación| R[Agente investigador]
+    R --> T[Tavily Search]
     R --> S
+    S -->|si requiere cálculos| A[Agente analista]
+    A --> M[calculate_metrics]
     A --> S
+    S -->|resultado válido| H{Aprobación humana}
+    H -->|aprobado| P[Informe publicado en Redis]
+    H -->|rechazado| N[Sin publicación]
+    S -.-> CP[(Checkpointer Redis)]
+    API -->|POST /knowledge/search| K[RAGSystem]
+    K --> BM[BM25 local]
+    K --> PC[(Pinecone Serverless)]
+    BM --> EN[EnsembleRetriever]
+    PC --> EN
+    EN --> SRC[Top-5 con fuentes]
+    API -.-> PH[Arize Phoenix / OpenTelemetry]
+    S -.-> PH
 ```
 
-#### Componentes
+El Supervisor aplica controles deterministas sobre las decisiones propuestas por el modelo: evita bucles, limita reintentos y no deriva al analista si la consulta no necesita cálculos. El estado de ejecución de LangGraph se guarda mediante `AsyncRedisSaver`. Los trabajos de la API se almacenan por separado como JSON con TTL en Redis.
 
-- **`state.py`** — `MultiAgentState`: mensajes, `next_agent`, `iteration_count`/`max_iterations`, `retry_count`, `research_data` (acumulativo, registra qué agente aportó qué), `analysis_result` y `task_status`.
-- **`src/agents/supervisor.py`** — decide el siguiente paso. El LLM propone con salida estructurada (`SupervisorOutput`, con `Literal` para los destinos) y el código valida la propuesta.
-- **`src/agents/research_agent.py`** — agente con Tavily. Conserva solo título, URL y contenido de cada resultado, tiene un límite de pasos propio y marca error si no obtuvo fuentes útiles. Distingue errores pasajeros (límite de uso, 429) de los definitivos.
-- **`src/agents/analyst_agent.py`** — agente con `calculate_metrics`. Solo marca éxito si la herramienta devolvió métricas válidas, y cita año y fuente de cada cifra.
-- **`src/graph.py`** — aristas condicionales con tipo de retorno `Literal` y una guarda adicional.
-- **`main.py`** — ejecuta los casos de prueba: `python main.py --case 1|2|3` (sin argumento corre los tres).
-
-#### Por qué una topología jerárquica
-
-El flujo depende de la pregunta: una consulta informativa termina tras investigar y una que pide cálculos pasa además por el analista. Un supervisor central permite auditar cada decisión (cada una se imprime con su razón) y aplicar límites en un solo lugar. El costo es que el supervisor es un punto único de falla, que se mitiga con las guardas descritas abajo.
-
-#### Manejo de conflictos y bucles
-
-- Tope de iteraciones (`max_iterations`) y límite de pasos propio en cada agente.
-- No se repite la investigación si ya fue exitosa.
-- No se deriva al analista si el usuario no pidió un cálculo, y no se cierra sin análisis si se pidió.
-- Un único reintento, solo para errores pasajeros. Los errores definitivos cierran con `failed` y el motivo real.
-- El cierre posterior al análisis se decide en código, sin llamar al modelo.
-
-#### Decisiones y compromisos
-
-- **El LLM propone, el código valida.** Se usa el modelo para entender la intención y reglas deterministas para impedir movimientos ilegales.
-- **Detección de cálculo por palabras clave** ("calcula", "promedio", "total", "suma", "métrica"). Es simple y predecible, pero no reconoce paráfrasis como "la media".
-- **Modelo:** `openai/gpt-oss-20b` servido por Groq, porque las cuentas de OpenAI y Anthropic no tenían crédito. Por los límites de tokens del plan gratuito, se acotan los resultados de búsqueda (`max_results=3`, truncado por fuente).
-- **Calidad de los datos:** las cifras provienen de búsquedas web y pueden mezclar años o fuentes. El sistema las cita pero no las verifica.
-
-#### Casos de prueba
-
-1. Consulta informativa sin cálculo: investiga y cierra.
-2. Búsqueda con cálculo ("población de Buenos Aires, Córdoba y Rosario y su promedio"): investiga, analiza y cierra.
-3. Consulta sin datos disponibles: falla de forma controlada con el motivo real.
-
-Demostración en video: [Casos de prueba](https://youtu.be/pGFE6rAPZFI)
-
-### Módulo 7 — API de producción con FastAPI, Redis y observabilidad
-
-El sistema multi-agente del Módulo 6 queda expuesto como una API asíncrona: una consulta se encola, se ejecuta en segundo plano y su estado se consulta por `job_id`. Antes de la acción crítica (publicar el reporte) el grafo se pausa y espera la aprobación de una persona.
-
-#### Arquitectura
-
-```mermaid
-flowchart LR
-    C[Cliente] -->|POST /tasks| API[FastAPI]
-    API -->|crea job PENDING| R[(Redis)]
-    API -->|202 + job_id| C
-    API -.->|tarea en segundo plano| W[Worker asíncrono]
-    W -->|estado del job| R
-    W --> G[Grafo LangGraph<br/>supervisor, investigador, analista]
-    G -->|checkpoints| R
-    G --> H{Aprobación humana}
-    H -->|WAITING_APPROVAL| R
-    C -->|POST /tasks/id/approve| API
-    API -.->|reanuda con Command| W
-    G -.->|trazas| P[Phoenix]
-```
-
-#### Estados de un job
+### Estados del trabajo
 
 ```mermaid
 stateDiagram-v2
     [*] --> PENDING
     PENDING --> RUNNING
-    RUNNING --> WAITING_APPROVAL: el grafo llega a la acción crítica
-    RUNNING --> FAILED: error del agente o excepción
-    WAITING_APPROVAL --> RUNNING: POST /approve
+    RUNNING --> WAITING_APPROVAL: informe preparado
+    RUNNING --> FAILED: error
+    WAITING_APPROVAL --> RUNNING: decisión recibida
     RUNNING --> DONE: aprobado y publicado
-    RUNNING --> REJECTED: un humano rechaza
+    RUNNING --> REJECTED: rechazado
 ```
 
-#### Estructura
+## Tecnologías y componentes
 
-- `app/main.py` — la API: encolado, consulta de estado y aprobación. Abre Redis y el checkpointer una sola vez al arrancar (lifespan).
-- `app/jobs.py` — modelo `Job` (Pydantic) y almacén de jobs en Redis con cliente asíncrono y TTL.
-- `app/worker.py` — ejecuta y reanuda el grafo en segundo plano. Toda excepción termina en `FAILED` con el motivo y su tipo (pasajero o definitivo).
-- `app/graph.py` — el orquestador del Módulo 6 más el nodo de aprobación humana, con el checkpointer de Redis (`AsyncRedisSaver`).
-- `app/hitl.py` — nodo Human-in-the-loop (`interrupt`) y la acción crítica simulada.
-- `app/observability.py` — trazas con Arize Phoenix (local).
-- `scripts/load_test.py` — prueba de 5 peticiones concurrentes.
-- `tests/test_api.py` — tests de la API con Redis simulado y nodos falsos.
-- `docker-compose.yml` — Redis Stack (y Phoenix como perfil opcional).
-- `screenshots/` — capturas de las trazas.
+| Área | Tecnología | Implementación |
+|---|---|---|
+| Lenguaje y validación | Python 3.12+, Pydantic | `Config.py`, `schemas.py`, esquemas de API |
+| Clientes LLM | OpenAI, Anthropic; Groq para agentes | `BaseLLMClient.py`, `models/`, `factory.py` |
+| Pipelines | LangChain y LCEL | `chain.py`, `rag_chain.py` |
+| Documentos | PDF/TXT, RecursiveCharacterTextSplitter | `ingest.py` |
+| Embeddings | HuggingFace `all-MiniLM-L6-v2` | `factory.py` |
+| Base vectorial | Pinecone Serverless | `vectorstore.py` |
+| Recuperación híbrida | BM25 + Pinecone, `EnsembleRetriever` | `rag_chain.py` |
+| Agentes | LangGraph, Tavily y herramientas de cálculo | `src/agents/`, `src/graph.py` |
+| API | FastAPI + trabajo asíncrono en proceso | `app/main.py`, `app/worker.py` |
+| Persistencia | Redis Stack + checkpoints Redis | `app/jobs.py`, `app/graph.py` |
+| Aprobación humana | LangGraph `interrupt` / `Command(resume=...)` | `app/hitl.py` |
+| Observabilidad | Arize Phoenix / OpenTelemetry | `app/observability.py` |
+| Pruebas | pytest, fakeredis, TestClient | `tests/` |
 
-#### Cómo correrlo
+### Organización del repositorio
 
-1. Levantar Redis (necesita RedisJSON y RediSearch, por eso se usa Redis Stack):
-   ```bash
-   docker compose up -d
-   ```
-2. Opcional, para ver las trazas: `docker compose --profile observability up -d` o `pip install arize-phoenix && phoenix serve`. La interfaz queda en http://localhost:6006.
-3. Instalar dependencias y configurar `.env` (ver `.env.example`):
-   ```bash
-   pip install -r requirements.txt
-   ```
-4. Arrancar la API desde la raíz del repo:
-   ```bash
-   uvicorn app.main:app --port 8000
-   ```
-5. Probar el flujo completo:
-   ```bash
-   # encolar (responde al instante con el job_id)
-   curl -X POST http://localhost:8000/tasks -H "Content-Type: application/json" \
-        -d '{"query": "Buscá la población de Buenos Aires, Córdoba y Rosario y calculá el promedio."}'
+```text
+.
+├── app/
+│   ├── main.py              # API: tareas, aprobación, búsqueda RAG
+│   ├── knowledge.py         # Recuperación documental asíncrona y esquemas
+│   ├── graph.py             # Grafo de API + checkpointer Redis
+│   ├── worker.py            # Ejecución y reanudación de trabajos
+│   ├── jobs.py              # Estados y almacenamiento de jobs
+│   ├── hitl.py              # Aprobación humana
+│   └── observability.py     # Instrumentación Phoenix
+├── src/
+│   ├── agents/              # Supervisor, investigador y analista
+│   ├── graph.py             # Orquestador multiagente
+│   └── tools.py             # Tavily y cálculo de métricas
+├── models/                  # Clientes de OpenAI y Anthropic
+├── data/
+│   ├── pathlib/             # Fichas técnicas para evaluación RAG
+│   └── text.txt             # Datos heredados de módulos anteriores
+├── tests/
+│   ├── test_api.py
+│   ├── test_rag_evaluation.py
+│   └── test_knowledge_api.py
+├── screenshots/             # Evidencias de Phoenix y pruebas de API
+├── Config.py                # Configuración Pydantic
+├── factory.py               # Fábrica de LLM y embeddings
+├── ingest.py                # Carga y fragmentación
+├── vectorstore.py           # Índice Pinecone
+├── rag_chain.py             # RAGSystem + recuperación híbrida
+├── evaluate.py              # Golden Set y Recall@5 / Precision@5
+├── docker-compose.yml
+├── run.sh                   # Inicio local en una instrucción
+└── requirements.txt
+```
 
-   # consultar el estado (cuando llega a WAITING_APPROVAL trae el borrador a aprobar)
-   curl http://localhost:8000/tasks/<job_id>
+## Requisitos e instalación
 
-   # aprobar o rechazar la publicación del reporte
-   curl -X POST http://localhost:8000/tasks/<job_id>/approve -H "Content-Type: application/json" \
-        -d '{"approved": true, "comment": "ok"}'
-   ```
-6. Prueba de concurrencia y tests:
-   ```bash
-   python scripts/load_test.py --approve
-   pytest tests/test_api.py -v
-   ```
+**Entorno:** Python 3.12 o posterior, Git, Docker Desktop/Engine con Docker Compose y Bash (Git Bash en Windows). Para ejecutar los agentes reales son necesarias credenciales de Groq y Tavily; para RAG es necesaria una cuenta de Pinecone.
 
-#### Manejo de fallos
-
-| Situación | Resultado |
-|---|---|
-| El agente no encuentra resultados | `FAILED`, con el motivo en `error` y `error_type: permanent` |
-| Límite de uso del proveedor (429) | `FAILED`, con `error_type: transient` |
-| Excepción inesperada en el grafo | `FAILED`, con el nombre y mensaje de la excepción |
-| Aprobar un job que no espera aprobación | `409` |
-| Job inexistente o expirado | `404` |
-| Redis caído al arrancar | la API falla al iniciar con un mensaje claro |
-
-#### Decisiones y límites
-
-- **Worker dentro del proceso de la API.** La consigna acepta una tarea asíncrona simple. Si el proceso se cae con un job en ejecución, el job queda en `RUNNING` hasta que expira, aunque sus checkpoints siguen en Redis. Un worker separado con cola real (por ejemplo, Redis Streams o Celery) sería el siguiente paso.
-- **Acción crítica simulada.** "Publicar" guarda el reporte en Redis (`report:<job_id>`). La aprobación humana es lo que se está demostrando.
-- **Límites de Groq.** Con el plan gratuito, varias corridas simultáneas del sistema multi-agente pueden recibir 429. Esos jobs terminan en `FAILED` con `error_type: transient`.
-- **TTL.** Los jobs expiran a las 24 horas (`JOB_TTL_SECONDS`).
-
-#### Evidencia de observabilidad
-
-Capturas de las trazas de Phoenix en `screenshots/`: una ejecución completa (supervisor, investigador, analista) y la prueba de 5 peticiones concurrentes con sus latencias.
-
-#### Verificación
-
-Qué se probó automáticamente y qué se verifica a mano:
-
-- **Automático (`pytest`):** estados del job, pausa y reanudación con aprobación, rechazo, fallos que llegan a `FAILED`, errores 404/409/422 y 5 jobs concurrentes, usando Redis simulado y nodos falsos.
-- **A mano:** Redis Stack real con el checkpointer, las trazas en Phoenix y el sistema completo con los modelos reales.
-
-## Requisitos
-
-- Python 3.12
-- Docker Desktop (para Redis Stack en el Módulo 7)
-- Claves de API:
-  - **Groq** y **Tavily**: agentes de los Módulos 5 a 7 y búsqueda web del investigador.
-  - **Pinecone** (plan gratuito): índice vectorial del Módulo 4.
-  - **OpenAI** y/o **Anthropic** (opcionales, con crédito cargado): clientes de los Módulos 1 y 2.
-
-
-## Instalación
+Clonar y preparar un entorno virtual:
 
 ```bash
-# Crear y activar entorno virtual
+git clone https://github.com/leannmeier/CH-Project-AI-Engineering.git
+cd CH-Project-AI-Engineering
 python -m venv .venv
-source .venv/Scripts/activate   # Git Bash / Linux / Mac
-# .venv\Scripts\activate.bat    # cmd de Windows
-
-# Instalar dependencias
-pip install -r requirements.txt
 ```
 
-## Configuración
+Activación del entorno:
 
-Copiá `.env.example` a `.env` y completá tus claves reales (el archivo `.env` está en `.gitignore` y nunca se sube al repositorio):
+- **Windows / Git Bash:** `source .venv/Scripts/activate`
+- **Windows / PowerShell:** `.\.venv\Scripts\Activate.ps1`
+- **Linux / macOS:** `source .venv/bin/activate`
+
+Instalar dependencias y crear la configuración:
 
 ```bash
+python -m pip install -r requirements.txt
 cp .env.example .env
 ```
 
-| Variable | Módulos | Para qué se usa |
-|---|---|---|
-| `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | 1, 2 | Clientes y pipeline con salida estructurada |
-| `GROQ_API_KEY` | 5, 6, 7 | Modelo de los agentes (`openai/gpt-oss-20b` servido por Groq) |
-| `TAVILY_API_KEY` | 6, 7 | Búsqueda web del agente investigador |
-| `PINECONE_API_KEY`, `INDEX_NAME` | 4 | Índice vectorial en la nube |
-| `REDIS_URL`, `JOB_TTL_SECONDS` | 7 | Redis Stack y duración de los jobs |
-| `ENABLE_TRACING`, `PHOENIX_COLLECTOR_ENDPOINT`, `PHOENIX_PROJECT_NAME` | 7 | Trazas con Phoenix (`ENABLE_TRACING=0` si no está corriendo) |
+En Windows también podés copiar el archivo desde el explorador. **Nunca subas el archivo `.env` ni compartas las claves en capturas.**
 
-## Uso
+### Variables de entorno
 
-Cada módulo se ejecuta por separado, desde la raíz del repo y con el entorno virtual activado.
+| Variable | Uso |
+|---|---|
+| `GROQ_API_KEY` | Modelo utilizado por Supervisor y agentes |
+| `TAVILY_API_KEY` | Investigación web del agente |
+| `PINECONE_API_KEY` | Índice vectorial |
+| `INDEX_NAME` | Nombre del índice, por ejemplo `rag-entrega4-test` |
+| `REDIS_URL` | Redis; valor local habitual `redis://localhost:6379/0` |
+| `JOB_TTL_SECONDS` | Expiración de trabajos, por defecto 86400 segundos |
+| `ENABLE_TRACING` | `1` para instrumentar, `0` para desactivar |
+| `PHOENIX_COLLECTOR_ENDPOINT` | Destino del colector, localmente `http://localhost:6006` |
+| `PHOENIX_PROJECT_NAME` | Proyecto de Phoenix: `sistema-intelligence` |
+| `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` | Opcionales para los clientes de módulos anteriores |
 
-**Módulo 4 — RAG híbrido** (necesita `PINECONE_API_KEY` y documentos `.pdf` o `.txt` en UTF-8 dentro de `./data`):
+Las claves del ejemplo `.env.example` deben reemplazarse por credenciales válidas cuando corresponda.
+
+## Inicio local
+
+Una vez instaladas las dependencias y creado `.env`, el comando de arranque principal es:
 
 ```bash
-# indexar los documentos en Pinecone (una sola vez)
-python -c "from vectorstore import build_and_index_vectorstore; build_and_index_vectorstore()"
+bash run.sh
+```
 
-# evaluación cuantitativa (Precision@5 y Recall@5, no necesita crédito de LLM)
+El script inicia **Redis Stack** con Docker Compose y después ejecuta FastAPI con Uvicorn. Disponible en:
+
+- **Swagger UI:** http://127.0.0.1:8000/docs
+- **OpenAPI:** http://127.0.0.1:8000/openapi.json
+- **Health:** http://127.0.0.1:8000/health
+
+Para observar las trazas en Phoenix, iniciar el servicio opcional **antes de lanzar la API**:
+
+```bash
+docker compose --profile observability up -d
+bash run.sh
+```
+
+**Phoenix:** http://localhost:6006. Al probar servicios reales se recomienda `ENABLE_TRACING=1`.
+
+> El inicio en una instrucción **presupone** que Python, dependencias, Docker y `.env` ya están preparados. `run.sh` no instala dependencias, no carga documentos en Pinecone y no levanta automáticamente Phoenix.
+
+## Uso de la API
+
+| Método | Endpoint | Descripción |
+|---|---|---|
+| `GET` | `/health` | Comprueba la disponibilidad de Redis |
+| `POST` | `/tasks` | Crea un trabajo multiagente y devuelve `202` |
+| `GET` | `/tasks/{job_id}` | Consulta el estado y resultado de un trabajo |
+| `POST` | `/tasks/{job_id}/approve` | Aprueba o rechaza la publicación |
+| `POST` | `/knowledge/search` | Devuelve fragmentos RAG con fuentes y metadatos |
+
+### Caso 1 — Orquestación de agentes
+
+En `POST /tasks`, desde Swagger o un cliente HTTP, enviar:
+
+```json
+{
+  "query": "Buscá la población de Buenos Aires, Córdoba y Rosario y calculá el promedio."
+}
+```
+
+El servidor responde `202 Accepted` y entrega un `job_id`. Luego consultar `GET /tasks/{job_id}`. Los estados contemplados son `PENDING`, `RUNNING`, `WAITING_APPROVAL`, `DONE`, `REJECTED` y `FAILED`.
+
+Cuando el trabajo llega a `WAITING_APPROVAL`, llamar a `POST /tasks/{job_id}/approve`:
+
+```json
+{
+  "approved": true,
+  "comment": "Revisión de prueba"
+}
+```
+
+La aprobación permite ejecutar la publicación **simulada** del informe en Redis (`report:{job_id}`). El rechazo deja el informe sin publicar. Un trabajo inexistente devuelve HTTP 404; aprobar fuera del estado esperado devuelve HTTP 409.
+
+### Caso 2 — Consulta de documentación (RAG)
+
+Enviar a `POST /knowledge/search`:
+
+```json
+{
+  "question": "¿Cómo leer un archivo UTF-8 usando pathlib?",
+  "k": 5
+}
+```
+
+La respuesta incluye `question` y una lista `hits` de hasta cinco fragmentos; cada elemento informa `source`, `content` y `metadata`. Se valida que `question` tenga entre 3 y 500 caracteres y que `k` esté entre 1 y 5.
+
+El resultado **no es una respuesta generada por un LLM**: proporciona contexto documental verificable. Si falla el acceso al recuperador, el endpoint devuelve HTTP 503.
+
+## RAG e indexación
+
+`ingest.py` carga archivos `.pdf` y `.txt` desde `data/` y subdirectorios. Los fragmenta usando `RecursiveCharacterTextSplitter` con tamaño de 800 caracteres y solapamiento de 150, conservando los metadatos de procedencia.
+
+`vectorstore.py` utiliza el modelo local de embeddings `all-MiniLM-L6-v2` (**384 dimensiones**) e indexa los fragmentos en Pinecone Serverless. El recuperador híbrido asigna **40 % a BM25** y **60 % a Pinecone**. `RAGSystem` limita a cinco documentos el resultado después de la fusión. Se conserva `build_hybrid_retriever()` por compatibilidad.
+
+En `data/pathlib/` hay cinco fichas técnicas **adaptadas y resumidas** de la [documentación oficial de Python](https://docs.python.org/3/library/pathlib.html), no copias literales. El antiguo `data/text.txt` se conserva como material legado.
+
+### Crear un índice de prueba
+
+Configurar en `.env`:
+
+```dotenv
+PINECONE_API_KEY=tu-clave-real
+INDEX_NAME=rag-entrega4-test
+```
+
+Si ese índice ya contiene la documentación utilizada para la evaluación, **no es necesario reindexarlo**. Para un experimento limpio, usar otro nombre nuevo, compatible con el modelo de 384 dimensiones, y ejecutar:
+
+```bash
+python -c "from vectorstore import build_and_index_vectorstore; build_and_index_vectorstore()"
 python evaluate.py
 ```
 
-**Módulo 6 — Orquestador multi-agente** (necesita `GROQ_API_KEY` y `TAVILY_API_KEY`):
+**Importante:** la indexación agrega vectores y no está diseñada como una sincronización idempotente ni borra documentos obsoletos. Evitar ejecutar cargas repetidas sobre un índice que se quiera preservar.
+
+### Golden Set y métricas
+
+`evaluate.py` evalúa cinco preguntas de `pathlib` con fuentes conocidas identificadas por `metadata["source"]`. Las preguntas cubren construcción de rutas, comprobaciones de archivos, lectura y escritura, búsqueda con glob y operaciones sobre directorios.
+
+- **Recall@5:** proporción de *fuentes documentales esperadas* representadas entre los resultados recuperados.
+- **Precision@5:** proporción de los cinco *chunks recuperados* que pertenecen a las fuentes esperadas. Varios chunks de una misma fuente cuentan por separado en precisión.
+
+**Resultado de una ejecución real reportada el 31/10/2026**, con seis archivos cargados y once chunks:
+
+| Métrica | Resultado |
+|---|---:|
+| Preguntas del Golden Set | 5 |
+| Mean Recall@5 | **100 %** |
+| Mean Precision@5 | **36 %** |
+| Fuente esperada en primera posición | **5 de 5** |
+
+Estas métricas reflejan recuperación y procedencia en un dataset acotado; **no equivalen a precisión semántica universal ni prueban respuestas generativas**.
+
+## Pruebas y resultados
+
+Para ejecutar todas las pruebas automatizadas:
 
 ```bash
-python main.py --case 1   # también 2 o 3; sin argumento corre los tres casos
+python -m pytest tests/test_rag_evaluation.py tests/test_api.py tests/test_knowledge_api.py -v
 ```
 
-**Módulo 7 — API de producción:** ver "Cómo correrlo" en la sección del Módulo 7.
+**Resultado reportado el 31/10/2026 en Windows, Python 3.12.6:**
 
-Si cambiás el contenido de `./data`, hace falta reindexar: usá un `INDEX_NAME` nuevo o vaciá el índice desde el panel de Pinecone.
+| Suite | Pruebas aprobadas |
+|---|---:|
+| `tests/test_rag_evaluation.py` | 7/7 |
+| `tests/test_api.py` | 10/10 |
+| `tests/test_knowledge_api.py` | 3/3 |
+| **Total** | **20/20** |
 
-## Notas de implementación
+Las pruebas automatizadas usan componentes simulados para Redis, agentes y recuperación documental. Además, se verificaron manualmente la indexación real en Pinecone y la respuesta HTTP `200 OK` de `POST /knowledge/search`. **No se afirma que estas 20 pruebas cubran todas las dependencias externas.**
 
-- **Anthropic (SDK ≥ 1.0):** el SDK crudo (`anthropic`) eliminó `temperature` de `messages.create()`; el `AnthropicClient` del Módulo 1 no lo reenvía por este motivo. El wrapper de LangChain (`langchain_anthropic.ChatAnthropic`) sí lo acepta y lo maneja internamente sin ese conflicto.
-- **Manejo de errores:** ambos clientes del Módulo 1 capturan la excepción base de su SDK y la traducen a `LLMClientError`, agnóstica de proveedor.
-- **Resiliencia (Módulo 2):** el pipeline LCEL reintenta automáticamente (hasta 3 intentos, con backoff exponencial) ante errores transitorios.
-- **Embeddings locales:** se usa `HuggingFaceEmbeddings` (`all-MiniLM-L6-v2`, 384 dimensiones) en lugar de embeddings de OpenAI/Anthropic, para que la indexación y recuperación funcionen sin consumir crédito de API — solo la generación final de texto depende del proveedor LLM configurado.
-- **LangChain ≥ 1.0:** la reorganización del paquete movió componentes "clásicos" (como `EnsembleRetriever`) a `langchain-classic`, separado del núcleo `langchain` (enfocado ahora en agentes). Ver `requirements.txt` para las dependencias exactas instaladas.
-- **Dimensión del índice de Pinecone:** debe coincidir con la dimensión del modelo de embeddings usado (384 para `all-MiniLM-L6-v2`), no con la de modelos de OpenAI (1536) si no se usan esos embeddings.
+Una comprobación de concurrencia real está disponible mediante:
+
+```bash
+python scripts/load_test.py -n 5 --stagger 2
+```
+
+Con límites del proveedor Groq, solicitudes concurrentes pueden recibir errores **429 Too Many Requests**. El sistema distingue fallos transitorios y permanentes; por eso una prueba de carga no garantiza que las cinco consultas concluyan con éxito si el proveedor limita el tráfico.
+
+## Observabilidad y evidencias
+
+`app/observability.py` configura instrumentación con Arize Phoenix y OpenTelemetry. El proyecto utiliza el nombre `sistema-intelligence`. La instrumentación permite registrar tráfico HTTP y, cuando está disponible, operaciones instrumentadas de LangChain/LangGraph.
+
+### Capturas existentes
+
+| Evidencia | Qué muestra |
+|---|---|
+| [evidencia-1.png](screenshots/evidencia-1.png) | Panel Phoenix del proyecto con **127 trazas** y solicitudes a endpoints de tareas |
+| [evidencia-2.png](screenshots/evidencia-2.png) | Detalle de una traza `GET /tasks/{job_id}`, spans de FastAPI y HTTP 200 |
+| [test-api.png](screenshots/test-api.png) | Ejecución anterior de diez pruebas de API aprobadas |
+
+![Panel de trazas de Arize Phoenix](screenshots/evidencia-1.png)
+
+![Detalle de una solicitud instrumentada](screenshots/evidencia-2.png)
+
+![Pruebas automatizadas de la API](screenshots/test-api.png)
+
+**Alcance de las evidencias:** estas imágenes acreditan que Phoenix estaba recibiendo trazas y que se ejecutaron pruebas de API. Por sí solas, **no prueban cinco recorridos completos y distintos** de Supervisor → herramientas → finalización; para sostener ese criterio de la evaluación final se necesitan trazas identificables de esos casos.
+
+También existe una [demostración de los casos del orquestador](https://youtu.be/pGFE6rAPZFI) realizada durante la evolución del proyecto.
+
+## Decisiones y limitaciones
+
+1. **Orquestación controlada.** El Supervisor puede recibir propuestas del LLM, pero el programa valida las transiciones y limita iteraciones y reintentos. Los agentes investigadores usan Tavily; el analista puede invocar `calculate_metrics`.
+2. **Async y validación.** FastAPI, las operaciones del grafo y el acceso a Redis emplean `async/await`. La inicialización del recuperador híbrido —que puede cargar embeddings y realizar E/S bloqueante— se deriva a `asyncio.to_thread`. Pydantic valida contratos de entrada y salida.
+3. **Persistencia de estado.** Los checkpoints de LangGraph viven en Redis. Sin embargo, el worker se implementa mediante `asyncio.create_task` dentro del proceso de FastAPI: **no existe recuperación automática garantizada de los trabajos en curso tras reiniciar el proceso**.
+4. **Human-in-the-loop.** El grafo usa `interrupt()` y se reanuda con `Command(resume=...)`. La publicación del informe es una acción simulada mediante escritura en Redis.
+5. **Separación de funciones.** El endpoint RAG usa BM25 + Pinecone, mientras que el Supervisor usa Tavily. La selección automática entre ambas fuentes **no está implementada**.
+6. **Dependencias.** El archivo `requirements.txt` contiene versiones fijadas; el funcionamiento en Python 3.12.6 está respaldado por pruebas de un entorno existente, pero **la instalación desde cero en un entorno limpio todavía debe validarse**.
+7. **Migraciones de librerías.** El uso de `BM25Retriever` desde `langchain-community` emite una advertencia de deprecación. No impide las ejecuciones reportadas, pero debe revisarse en futuras actualizaciones.
+8. **Operación local.** `run.sh` simplifica el arranque, pero no sustituye la instalación inicial de Docker, Python ni credenciales. CI/CD y despliegue cloud no forman parte de esta implementación.
+
+## Evolución académica
+
+Este repositorio conserva los componentes de las entregas previas y los integra progresivamente:
+
+- **Módulos 1–2:** clientes asíncronos de OpenAI y Anthropic, configuración y salida estructurada con LCEL.
+- **Módulos 3–4:** ingesta, fragmentación, RAG híbrido y evaluación por fuente documental en Pinecone.
+- **Módulo 5:** experimentación con agentes y persistencia SQLite en etapas anteriores. Algunas interfaces históricas permanecen en el repositorio; **la aplicación actual utiliza el Supervisor de `src/graph.py` y `app/graph.py`**, no el flujo antiguo de dos nodos.
+- **Módulo 6:** Supervisor con agentes especializados de investigación y análisis.
+- **Módulo 7:** FastAPI, Redis Stack, human-in-the-loop, observabilidad y pruebas.
+- **Entrega final:** exposición del recuperador RAG en la misma API, arranque local simplificado y documentación integrada.
 
 ## Autor
-Meier Leandro Agustín — Analista de Sistemas
-## Corrección incremental del Módulo 4 (posterior a la entrega 7)
 
-Esta corrección se desarrolló sin cambiar el contrato de la API de FastAPI, el grafo
-Supervisor, el flujo HITL ni las funciones públicas existentes de los agentes.
+**Leandro Agustín Meier** — Analista de Sistemas.
 
-### Dataset y procedencia
-
-En `data/pathlib/` se incluyen **cinco fichas técnicas adaptadas y resumidas**
-sobre la biblioteca estándar `pathlib` de Python, basadas en la [documentación
-oficial](https://docs.python.org/3/library/pathlib.html). No son una reproducción
-literal de la documentación oficial. Cada ficha tiene un tema y una ruta
-diferente que permite verificar el documento fuente de cada pregunta.
-
-`ingest.py` incluye los `.txt` de subcarpetas; `TextLoader` conserva el
-campo `source` (ruta del archivo) y `RecursiveCharacterTextSplitter`
-propaga los metadatos a cada chunk.
-
-### Cómo replicar la indexación de Pinecone
-
-1. Usar Python **3.12+** y configurar `.env` a partir de `.env.example`.
-   Configurar `PINECONE_API_KEY` e `INDEX_NAME`. La dimensión actual es
-   **384**, correspondiente a `all-MiniLM-L6-v2`; no reutilizar un índice
-   con otra dimensión o con otro modelo de embeddings.
-2. Instalar dependencias: `python -m pip install -r requirements.txt`.
-3. Para evitar contaminar un índice ya utilizado por otras entregas,
-   asignar a `INDEX_NAME` **un nombre nuevo de índice de pruebas**.
-4. Indexar los documentos del directorio `data/` (incluidas las fichas):
-   `python -c "from vectorstore import build_and_index_vectorstore; build_and_index_vectorstore()"`.
-5. Ejecutar `python evaluate.py` y revisar los cinco resultados y los
-   promedios de las dos métricas.
-
-**Atención:** `build_and_index_vectorstore()` agrega chunks; no elimina
-vectores previos ni garantiza actualizaciones idempotentes. Usá un índice
-nuevo para una evaluación limpia. El archivo legado `data/text.txt` se
-conserva por compatibilidad, pero **no forma parte del Golden Set**.
-Para el benchmark, cada fuente esperada está en `data/pathlib/`.
-Un entorno desconectado de Pinecone no puede ejecutar la evaluación real.
-
-### Interpretación de métricas
-
-- `Recall@5` = cantidad de fuentes correctas presentes / cantidad de fuentes
-  esperadas para la pregunta.
-- `Precision@5` = cantidad de **chunks** recuperados de fuentes correctas /
-  cinco resultados posibles. Diferentes chunks de un mismo archivo cuentan
-  como distintos resultados en precisión, no en recall.
-- Estas métricas comprueban procedencia documental, **no validan la veracidad
-  semántica** de cada chunk. Los resultados son orientativos y deben
-  corroborarse con el contexto recuperado.
-
-### Pruebas de regresión
-
-```bash
-python -m pytest tests/test_rag_evaluation.py -v
-python -m pytest tests/test_api.py -v
-```
-
-Las primeras usan recuperadores simulados para comprobar top-5, método
-asíncrono, metadatos y benchmark sin consumir créditos ni conectar a
-Pinecone. Las segundas conservan las pruebas de la entrega 7 con Redis simulado.
-
-Estas pruebas no sustituyen verificar **en un entorno limpio** la instalación
-de dependencias, la indexación real, ni el flujo completo de FastAPI, Redis y
-trazas de Phoenix. `requirements.txt` es un conjunto amplio de versiones
-fijadas; `pywin32` se restringe a Windows para evitar un fallo inmediato
-en otros sistemas operativos.
+Proyecto académico de **AI Engineering — Coderhouse**.
