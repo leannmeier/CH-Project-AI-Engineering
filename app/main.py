@@ -26,6 +26,7 @@ from fastapi import FastAPI, HTTPException, Request  # noqa: E402
 from pydantic import BaseModel, Field  # noqa: E402
 
 from app.graph import build_graph, open_checkpointer  # noqa: E402
+from app.knowledge import KnowledgeRequest, KnowledgeResponse, search_knowledge  # noqa: E402
 from app.jobs import REDIS_URL, Job, JobStatus, JobStore  # noqa: E402
 from app.worker import resume_job, run_job  # noqa: E402
 
